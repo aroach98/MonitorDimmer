@@ -1,3 +1,8 @@
+param(
+    # Process name (no .exe) whose window's monitor always stays un-dimmed,
+    # regardless of focus. Example: -PinProcess Wow. Empty = follow focus.
+    [string]$PinProcess = ''
+)
 <#
     MonitorDimmer.ps1
     A free replacement for DisplayFusion's "Monitor Fading" feature.
@@ -84,6 +89,12 @@ Add-Type -Namespace Win -Name Native -MemberDefinition @"
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     public static extern bool IsWindowVisible(System.IntPtr hwnd);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern bool IsIconic(System.IntPtr hwnd);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    public static extern bool IsWindow(System.IntPtr hwnd);
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     public static extern bool GetWindowRect(System.IntPtr hwnd, out RECT rect);
@@ -191,7 +202,32 @@ $controller | Add-Member -NotePropertyName CandidateSince -NotePropertyValue ([D
 # matters: Screen.FromHandle answers "primary monitor" for a null or bogus
 # handle, and acting on that is exactly what used to black out the monitor you
 # were watching whenever anything hiccuped.
+# Pin mode: cache the pinned process's main window, re-resolving every ~2s.
+$script:PinHwnd     = [System.IntPtr]::Zero
+$script:PinLookedUp = [DateTime]::MinValue
+
+function Get-PinnedScreenName {
+    if (-not $PinProcess) { return $null }
+    $now = Get-Date
+    if ($script:PinHwnd -eq [System.IntPtr]::Zero -or
+        -not [Win.Native]::IsWindow($script:PinHwnd) -or
+        ($now - $script:PinLookedUp).TotalSeconds -ge 2) {
+        $script:PinLookedUp = $now
+        $p = Get-Process -Name $PinProcess -ErrorAction SilentlyContinue |
+             Where-Object { $_.MainWindowHandle -ne [System.IntPtr]::Zero } |
+             Select-Object -First 1
+        $script:PinHwnd = if ($p) { $p.MainWindowHandle } else { [System.IntPtr]::Zero }
+    }
+    if ($script:PinHwnd -eq [System.IntPtr]::Zero) { return $null }
+    if ([Win.Native]::IsIconic($script:PinHwnd))   { return $null }   # minimized: hold
+    return [System.Windows.Forms.Screen]::FromHandle($script:PinHwnd).DeviceName
+}
+
 function Get-ActiveScreenName {
+    # Pinned process running? Its monitor wins, focus is ignored.
+    $pinned = Get-PinnedScreenName
+    if ($null -ne $pinned) { return $pinned }
+
     $fg = [Win.Native]::GetForegroundWindow()
 
     # No foreground window at all -- normal during focus handoffs and fullscreen
@@ -373,7 +409,8 @@ function Update-TrayText {
     $state = if ($controller.IsActive) { 'on' } else { 'off' }
     $pct   = [int]($controller.DimLevel * 100)
     # NotifyIcon.Text is capped at 63 chars.
-    $script:Tray.Text = "Monitor Dimmer: $state, $pct%  (Ctrl+Alt+F toggles)"
+    $pin   = if ($PinProcess) { " pin:$PinProcess" } else { '' }
+    $script:Tray.Text = "Monitor Dimmer: $state, $pct%$pin (Ctrl+Alt+F)"
     $script:TrayToggleItem.Text    = if ($controller.IsActive) { 'Dimming on  (click to turn off)' } else { 'Dimming off  (click to turn on)' }
     $script:TrayToggleItem.Checked = $controller.IsActive
 }
