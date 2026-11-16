@@ -1,7 +1,9 @@
 param(
     # Process name (no .exe) whose window's monitor always stays un-dimmed,
     # regardless of focus. Example: -PinProcess Wow. Empty = follow focus.
-    [string]$PinProcess = ''
+    [string]$PinProcess = '',
+    # Start with EVERY monitor dimmed (same as pressing Ctrl+Alt+A).
+    [switch]$DimAll
 )
 <#
     MonitorDimmer.ps1
@@ -21,6 +23,7 @@ param(
       Ctrl + Alt + F        Toggle dimming on/off
       Ctrl + Alt + Up       Dim more (darker)
       Ctrl + Alt + Down     Dim less (lighter)
+      Ctrl + Alt + A        Dim ALL monitors on/off (incl. the active one)
       Ctrl + Alt + Q        Quit
 
     Run:  double-click Start-MonitorDimmer.bat (or the "Monitor Dimmer" shortcut).
@@ -189,6 +192,7 @@ $controller.Opacity         = 0
 $controller.Add_Shown({ $controller.Hide() })
 
 $controller | Add-Member -NotePropertyName IsActive -NotePropertyValue $StartActive
+$controller | Add-Member -NotePropertyName AllDim   -NotePropertyValue ([bool]$DimAll)
 $controller | Add-Member -NotePropertyName DimLevel -NotePropertyValue $DimLevelStart
 $controller | Add-Member -NotePropertyName Overlays -NotePropertyValue $overlays
 # The monitor the overlays are currently committed to, plus the monitor that is
@@ -283,7 +287,8 @@ function Update-Overlays {
             $f.AppliedOpacity = $controller.DimLevel
         }
         # Dim every monitor EXCEPT the one holding the focused window.
-        $shouldDim = ($f.ScreenName -ne $controller.ActiveScreen)
+        # Dim-all mode blacks out the active monitor too.
+        $shouldDim = $controller.AllDim -or ($f.ScreenName -ne $controller.ActiveScreen)
         if ($shouldDim -and -not $f.Visible)     { $f.Show(); Make-ClickThrough $f }
         elseif (-not $shouldDim -and $f.Visible) { $f.Hide() }
     }
@@ -336,7 +341,7 @@ Add-Type -Namespace Win -Name Hotkey -MemberDefinition @"
 $MOD_ALT     = 0x0001
 $MOD_CONTROL = 0x0002
 $WM_HOTKEY   = 0x0312
-$ID_TOGGLE = 1; $ID_UP = 2; $ID_DOWN = 3; $ID_QUIT = 4
+$ID_TOGGLE = 1; $ID_UP = 2; $ID_DOWN = 3; $ID_QUIT = 4; $ID_ALL = 5
 
 Add-Type -ReferencedAssemblies System.Windows.Forms -TypeDefinition @"
 using System;
@@ -353,7 +358,7 @@ public class HotkeyWindow : NativeWindow {
 function Stop-Dimmer {
     $timer.Stop()
     try { [Microsoft.Win32.SystemEvents]::remove_DisplaySettingsChanged($onDisplayChange) } catch {}
-    foreach ($id in @($ID_TOGGLE,$ID_UP,$ID_DOWN,$ID_QUIT)) {
+    foreach ($id in @($ID_TOGGLE,$ID_UP,$ID_DOWN,$ID_QUIT,$ID_ALL)) {
         [Win.Hotkey]::UnregisterHotKey($controller.Handle, $id) | Out-Null
     }
     if ($script:Tray) { $script:Tray.Visible = $false; $script:Tray.Dispose() }
@@ -364,6 +369,14 @@ function Stop-Dimmer {
 
 function Set-DimLevel([double]$level) {
     $controller.DimLevel = [Math]::Max(0.05, [Math]::Min(1.0, $level))
+    Update-Overlays
+    Update-TrayText
+}
+
+function Toggle-DimAll {
+    $controller.AllDim = -not $controller.AllDim
+    # Dim-all only makes sense with dimming on.
+    if ($controller.AllDim) { $controller.IsActive = $true }
     Update-Overlays
     Update-TrayText
 }
@@ -393,6 +406,8 @@ function New-TrayIcon {
     $script:TrayToggleItem.add_Click({ Toggle-Dimmer })
     [void]$menu.Items.Add('Dim more    (Ctrl+Alt+Up)').add_Click({ Set-DimLevel ($controller.DimLevel + $OpacityStep) })
     [void]$menu.Items.Add('Dim less    (Ctrl+Alt+Down)').add_Click({ Set-DimLevel ($controller.DimLevel - $OpacityStep) })
+    $script:TrayAllItem = $menu.Items.Add('Dim ALL monitors    (Ctrl+Alt+A)')
+    $script:TrayAllItem.add_Click({ Toggle-DimAll })
     [void]$menu.Items.Add('-')
     [void]$menu.Items.Add('Quit    (Ctrl+Alt+Q)').add_Click({ Stop-Dimmer })
 
@@ -409,10 +424,12 @@ function Update-TrayText {
     $state = if ($controller.IsActive) { 'on' } else { 'off' }
     $pct   = [int]($controller.DimLevel * 100)
     # NotifyIcon.Text is capped at 63 chars.
+    if ($controller.AllDim) { $state = 'ALL' }
     $pin   = if ($PinProcess) { " pin:$PinProcess" } else { '' }
     $script:Tray.Text = "Monitor Dimmer: $state, $pct%$pin (Ctrl+Alt+F)"
     $script:TrayToggleItem.Text    = if ($controller.IsActive) { 'Dimming on  (click to turn off)' } else { 'Dimming off  (click to turn on)' }
     $script:TrayToggleItem.Checked = $controller.IsActive
+    $script:TrayAllItem.Checked    = $controller.AllDim
 }
 
 $hotWin = New-Object HotkeyWindow
@@ -423,6 +440,7 @@ $hotWin.add_OnHotkey({
         $ID_UP     { Set-DimLevel ($controller.DimLevel + $OpacityStep) }
         $ID_DOWN   { Set-DimLevel ($controller.DimLevel - $OpacityStep) }
         $ID_QUIT   { Stop-Dimmer }
+        $ID_ALL    { Toggle-DimAll }
     }
 })
 
@@ -432,6 +450,7 @@ $controller.Add_HandleCreated({
     [Win.Hotkey]::RegisterHotKey($h, $ID_TOGGLE, ($MOD_CONTROL -bor $MOD_ALT), [int][System.Windows.Forms.Keys]::F)    | Out-Null
     [Win.Hotkey]::RegisterHotKey($h, $ID_UP,     ($MOD_CONTROL -bor $MOD_ALT), [int][System.Windows.Forms.Keys]::Up)   | Out-Null
     [Win.Hotkey]::RegisterHotKey($h, $ID_DOWN,   ($MOD_CONTROL -bor $MOD_ALT), [int][System.Windows.Forms.Keys]::Down) | Out-Null
+    [Win.Hotkey]::RegisterHotKey($h, $ID_ALL,    ($MOD_CONTROL -bor $MOD_ALT), [int][System.Windows.Forms.Keys]::A)    | Out-Null
     [Win.Hotkey]::RegisterHotKey($h, $ID_QUIT,   ($MOD_CONTROL -bor $MOD_ALT), [int][System.Windows.Forms.Keys]::Q)    | Out-Null
 })
 $controller.Add_FormClosed({
