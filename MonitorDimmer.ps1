@@ -3,7 +3,10 @@ param(
     # regardless of focus. Example: -PinProcess Wow. Empty = follow focus.
     [string]$PinProcess = '',
     # Start with EVERY monitor dimmed (same as pressing Ctrl+Alt+A).
-    [switch]$DimAll
+    [switch]$DimAll,
+    # Starting dim level, 0.05-1.0. 0 = use $DimLevelStart below. Use something
+    # like 0.5 with -DimAll so the screen you are using stays readable.
+    [double]$Level = 0
 )
 <#
     MonitorDimmer.ps1
@@ -49,6 +52,7 @@ if (-not $singleInstanceMutex.WaitOne(0)) {
 # Settings you can tweak
 # ----------------------------------------------------------------------------
 $DimLevelStart = 1.00      # 0.0 = invisible, 1.0 = fully black.
+if ($Level -gt 0) { $DimLevelStart = [Math]::Max(0.05, [Math]::Min(1.0, $Level)) }
 $DimColor      = 'Black'   # Any .NET color name: Black, DimGray, Navy, etc.
 $OpacityStep   = 0.10      # How much Up/Down changes the dim.
 $StartActive   = $true     # Start with dimming already on?
